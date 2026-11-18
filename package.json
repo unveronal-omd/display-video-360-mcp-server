@@ -8,7 +8,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test \"src/**/*.test.ts\""
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "start:http": "node dist/remote/main.js",
+    "dev:http": "tsx watch src/remote/main.ts"
   },
   "repository": {
     "type": "git",
@@ -41,8 +43,10 @@
     "fsevents@2.3.3": true
   },
   "dependencies": {
+    "@modelcontextprotocol/node": "^2.1.2",
     "@modelcontextprotocol/server": "^2.4.0",
     "google-auth-library": "^11.3.3",
+    "jose": "^6.2.17",
     "read-excel-file": "^9.3.14",
     "zod": "^4.6.7"
   },

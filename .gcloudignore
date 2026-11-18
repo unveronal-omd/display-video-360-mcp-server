@@ -1,0 +1,13 @@
+# Upload allowlist for `gcloud run deploy --source` and Cloud Build uploads.
+# Ignore everything, then allow only what the Docker build needs.
+# Credentials and OAuth client files live outside the repository and must never be listed here.
+*
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.build.json
+!src/
+!src/**
+**/.DS_Store
