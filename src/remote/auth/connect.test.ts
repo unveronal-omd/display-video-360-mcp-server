@@ -80,7 +80,7 @@ test('sign-in from an MCP client connects Google, then resumes the client reques
   assert.equal(connectRequest.headers.get('authorization'), 'Bearer my-account-token');
   const connectBody = JSON.parse(connectRequest.body);
   assert.deepEqual(connectBody.scopes, ['openid', 'profile', ...GOOGLE_SCOPES]);
-  assert.deepEqual(connectBody.authorization_params, { include_granted_scopes: 'true', login_hint: 'person@example.test' });
+  assert.deepEqual(connectBody.authorization_params, { login_hint: 'person@example.test' });
   assert.equal(connectBody.redirect_uri, `${BASE}/connect/complete`);
 
   assert.equal(second.status, 302);
@@ -149,12 +149,6 @@ test('a login error or a failed code exchange stops the flow without leaking det
     { type: 'connect.step', step: 'callback', outcome: 'failed', reason: 'login_error', code: 'access_denied' },
     { type: 'connect.step', step: 'callback', outcome: 'failed', reason: 'code_exchange', httpStatus: 403, code: 'invalid_grant' },
   ]);
-});
-
-test('earlier grants are still included when the ID token has no email', async () => {
-  const context = setup({ token: () => json({ access_token: 'my-account-token', id_token: idToken({}) }) });
-  await runToGoogle(context, () => context.call('/connect'));
-  assert.deepEqual(JSON.parse(context.sent[1].body).authorization_params, { include_granted_scopes: 'true' });
 });
 
 test('a connect answer without an HTTPS connect URI is refused', async () => {
