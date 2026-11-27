@@ -1,6 +1,6 @@
 # Plan: per-user Google access
 
-Status: planned (2026-11-27). Work through the steps in order; mark each one done here with its date.
+Status: **done** (2026-11-27). Live with per-user access; the steps below record how it was built and verified.
 
 ## Goal
 
@@ -65,7 +65,7 @@ In the project that owns the OAuth client of the shared Auth0 Google connection 
 - Cloud Run: new env vars and secret references; build at an exact commit and deploy by digest (see `docs/deployment.md`). Keep the shared credential mounted but unused until step 6 passes, for rollback.
 - Done when: a new revision serves 100 % and `/health` answers.
 
-### 6. Verify live
+### 6. Verify live — done 2026-11-27
 
 Results so far (2026-11-27):
 - Endpoints after deploy: health 200; `/mcp` without token 401 with `resource_metadata`; metadata names this server; `/connect` redirects to Auth0; `/authorize` refuses an unknown client; startup line says per-user mode.
@@ -74,6 +74,8 @@ Results so far (2026-11-27):
 - Local stdio (built server, MCP client over stdio): 14 tools listed, `health` ok.
 - **Shared connection: the newest connect step wins (found 2026-11-27).** After a GA4 reconnect, the next DV360 Token Vault exchange (once the one-hour cache expired) returned a Google token without the DV360 scopes (`scope_missing`). Auth0 keeps one Google grant per user for the shared `google-oauth2` connection, and each server's connect step replaces it; GA4 and Ads already had this between them. An earlier "GA4 still works after DV360" result was most likely GA4's own token cache.
 - **Option A failed (2026-11-27):** sending `include_granted_scopes=true` in the connect step's `authorization_params` made Auth0's My Account API reject the connect request (400), so nobody could connect; traffic was rolled back to the previous revision within minutes and the code change reverted. **Option B chosen (2026-11-27):** a Token Vault-only Google connection for DV360. The dashboard allows one Google connection, but the Management API (Auth0 CLI) created a second one with the same Google client and a client secret of its own (sign-in off, Connected Accounts on), enabled only for the DV360 MCP application and the DV360 MCP Token Vault client. A limit test created 10 more Google connections without refusal (then deleted them). The code reads it from `AUTH0_TOKEN_VAULT_CONNECTION`; sign-in stays on `google-oauth2`. GA4 and Ads still share `google-oauth2` and replace each other's grant; giving one of them its own connection is separate work in its repository. Still rejected: every server requesting every scope.
+- **Option B verified live (2026-11-27):** DV360 reconnected (grant stored on its own connection), then GA4 reconnected, then a DV360 question made a fresh Token Vault exchange (no cached token) that succeeded, and GA4 also worked. Existing DV360 users reconnect once after this change, because their grant was on the sign-in connection.
+- **Token renewal:** exchanges more than an hour after a connect step returned a token from Token Vault (seen at the earlier `scope_missing` result, whose exchange itself succeeded), so the stored refresh token works.
 - No token / invalid token → 401.
 - Reconnect in claude.ai: Google sign-in and DV360 permission screen, then back to Claude with no link to paste.
 - Two users with different DV360 access each see only their own partners and advertisers (`list_partners`, an advertiser search, one report).
@@ -82,13 +84,15 @@ Results so far (2026-11-27):
 - **Shared connection (first live check):** a user who already uses another per-user server on the same Auth0 Google connection (GA4 or Ads) connects DV360; their other servers must still work, and DV360 must still work afterwards. If a new connect step replaces the earlier connected account, consider asking Google for `include_granted_scopes=true` in the connect step (unverified through Auth0).
 - stdio mode still works locally.
 
-### 7. Clean up
-- Remove the shared credential mount and disable its secret versions; revoke its grant.
-- Update `docs/deployment.md`, `docs/remote.md`, `docs/decisions.md`, `docs/current-state.md`; delete this plan or mark it done.
+### 7. Clean up — done 2026-11-27
+- Shared credential: mount, volume and `GOOGLE_APPLICATION_CREDENTIALS` removed from the service; its secret version disabled; the shared account's grant to the old Desktop client revoked (that also ends any local login made through that client).
+- Auth0: the Token Vault client no longer uses the sign-in connection; the DV360 MCP application no longer allows password sign-in.
+- Docs: `deployment.md`, `remote.md`, and this plan. `decisions.md` and `current-state.md` are shared with upstream, so fork-only facts stay out of them.
 
 ## Known limits
 
-- All per-user servers share one Auth0 Google connection and one Google client; a connect step replaces the stored Google grant (verified 2026-11-27). Until every server includes earlier grants, a user must reconnect a server after connecting another.
+- A connect step replaces the stored Google grant on its connection (verified 2026-11-27). DV360 has a connection of its own; GA4 and Ads still share `google-oauth2` and replace each other's grant (next: give one of them its own connection, in its repository).
+- Access is per claude.ai account, not per person: people who share one claude.ai login share its connector sign-in and act as whoever connected last.
 
 - Consent screen in Testing mode: test users only (≤ 100), and users reconnect about every 7 days until the app is verified.
 - Each user's Bid Manager queries and limits are tracked per user runtime; a cold start resets them (as today).
