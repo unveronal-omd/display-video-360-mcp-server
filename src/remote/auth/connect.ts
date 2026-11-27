@@ -206,8 +206,13 @@ export function createConnectHandler(options: ConnectOptions): ConnectHandler {
     const connectResponse = await post('me/v1/connected-accounts/connect', {
       connection: options.connection, redirect_uri: completeUrl, state: connectState,
       scopes: ['openid', 'profile', ...GOOGLE_SCOPES],
-      // Pre-select the Google account just used, so Google doesn't show its account chooser again.
-      ...(email ? { authorization_params: { login_hint: email } } : {}),
+      authorization_params: {
+        // Auth0 keeps one Google grant per user and connection, and each connect step replaces it. Asking Google to
+        // include earlier grants keeps the other servers' scopes (GA4, Ads) in the new grant instead of dropping them.
+        include_granted_scopes: 'true',
+        // Pre-select the Google account just used, so Google doesn't show its account chooser again.
+        ...(email ? { login_hint: email } : {}),
+      },
     }, { token: myAccountToken });
     const session = await readJson(connectResponse);
     const connectUri = session.connect_uri;
