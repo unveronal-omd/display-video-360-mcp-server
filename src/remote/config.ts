@@ -14,7 +14,10 @@ export type PerUserConfig = {
   readonly tokenVaultClientSecret: string;
   readonly connectClientId: string;
   readonly connectClientSecret: string;
+  /** The Google connection users sign in with. */
   readonly googleConnection: string;
+  /** The Google connection that holds this server's Token Vault grant; its own, so other servers' connect steps can't replace it. */
+  readonly tokenVaultConnection: string;
 };
 
 // HTTP and authorization settings of the remote entry point. The Google quota project is read by the
@@ -121,13 +124,14 @@ function loadPerUserConfig(env: NodeJS.ProcessEnv, auth: AuthConfig | undefined)
   }
   if (!auth) throw new Error('Per-user Google access requires AUTH0_ISSUER and AUTH0_AUDIENCE');
   const googleConnection = env.AUTH0_GOOGLE_CONNECTION?.trim() || 'google-oauth2';
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(googleConnection)) {
-    throw new Error('AUTH0_GOOGLE_CONNECTION must be an Auth0 connection name');
+  const tokenVaultConnection = env.AUTH0_TOKEN_VAULT_CONNECTION?.trim() || googleConnection;
+  for (const [name, value] of [['AUTH0_GOOGLE_CONNECTION', googleConnection], ['AUTH0_TOKEN_VAULT_CONNECTION', tokenVaultConnection]]) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new Error(`${name} must be an Auth0 connection name`);
   }
   const [tokenVaultClientId, tokenVaultClientSecret, connectClientId, connectClientSecret] = values;
   return {
     publicBaseUrl: new URL(auth.audience).origin,
-    tokenVaultClientId, tokenVaultClientSecret, connectClientId, connectClientSecret, googleConnection,
+    tokenVaultClientId, tokenVaultClientSecret, connectClientId, connectClientSecret, googleConnection, tokenVaultConnection,
   };
 }
 

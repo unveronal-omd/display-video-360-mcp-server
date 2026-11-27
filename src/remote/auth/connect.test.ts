@@ -17,7 +17,7 @@ function setup(answers: Partial<Record<'token' | 'connect' | 'complete', () => R
   const sent: Sent[] = [];
   const events: ConnectEvent[] = [];
   const handler = createConnectHandler({
-    issuer: ISSUER, publicBaseUrl: BASE, clientId: 'connect-client', clientSecret: 'connect-secret-value', connection: 'google-oauth2',
+    issuer: ISSUER, publicBaseUrl: BASE, clientId: 'connect-client', clientSecret: 'connect-secret-value', connection: 'google-oauth2', vaultConnection: 'google-vault',
     now: () => clock, onEvent: event => { events.push(event); },
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
@@ -82,6 +82,7 @@ test('sign-in from an MCP client connects Google, then resumes the client reques
   assert.deepEqual(connectBody.scopes, ['openid', 'profile', ...GOOGLE_SCOPES]);
   assert.deepEqual(connectBody.authorization_params, { login_hint: 'person@example.test' });
   assert.equal(connectBody.redirect_uri, `${BASE}/connect/complete`);
+  assert.equal(connectBody.connection, 'google-vault', 'the grant is stored on the Token Vault connection');
 
   assert.equal(second.status, 302);
   assert.equal(second.headers.get('location'), `${CONNECT_URI}?ticket=ticket-1`);

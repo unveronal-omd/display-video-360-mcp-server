@@ -144,8 +144,14 @@ test('per-user access takes its public URL from the audience and defaults the Go
     publicBaseUrl: 'https://mcp.example.test',
     tokenVaultClientId: 'vault-client', tokenVaultClientSecret: 'vault-secret',
     connectClientId: 'connect-client', connectClientSecret: 'connect-secret', googleConnection: 'google-oauth2',
+    tokenVaultConnection: 'google-oauth2',
   });
   assert.equal(loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER, AUTH0_GOOGLE_CONNECTION: 'google-custom' }).perUser?.googleConnection, 'google-custom');
+  assert.equal(loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER, AUTH0_GOOGLE_CONNECTION: 'google-custom' }).perUser?.tokenVaultConnection, 'google-custom',
+    'the Token Vault connection defaults to the sign-in connection');
+  const split = loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER, AUTH0_TOKEN_VAULT_CONNECTION: 'google-vault' }).perUser;
+  assert.equal(split?.googleConnection, 'google-oauth2');
+  assert.equal(split?.tokenVaultConnection, 'google-vault');
 });
 
 for (const name of Object.keys(PER_USER)) {
@@ -157,4 +163,5 @@ for (const name of Object.keys(PER_USER)) {
 test('per-user access requires Auth0 and a valid connection name', () => {
   assert.throws(() => loadConfig({ ...BASE_ENV, ...PER_USER }), /requires AUTH0_ISSUER and AUTH0_AUDIENCE/);
   assert.throws(() => loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER, AUTH0_GOOGLE_CONNECTION: 'bad name' }), /AUTH0_GOOGLE_CONNECTION/);
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER, AUTH0_TOKEN_VAULT_CONNECTION: 'bad name' }), /AUTH0_TOKEN_VAULT_CONNECTION/);
 });

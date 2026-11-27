@@ -3,7 +3,8 @@
 // /authorize         The MCP client's sign-in (this server is the advertised authorization server). The request is
 //                    saved and the steps below run; /connect runs them without an MCP client.
 // /connect           Auth0 login (Google connection, PKCE) for a My Account API token.
-// /connect/callback  Code exchange, then a connected-accounts session for the DV360 scopes; redirect to Google.
+// /connect/callback  Code exchange, then a connected-accounts session for the DV360 scopes on the Token Vault
+//                    connection; redirect to Google.
 // /connect/complete  Finish the session (Auth0 stores the Google tokens). From /authorize, continue at Auth0's
 //                    /authorize with the saved request, which completes without a prompt (the user is signed in).
 //
@@ -25,7 +26,11 @@ export type ConnectOptions = {
   /** The Regular Web Application MCP clients use; it also runs this flow. */
   readonly clientId: string;
   readonly clientSecret: string;
+  /** The Google connection users sign in with (login and the resumed sign-in). */
   readonly connection: string;
+  /** The Google connection that stores the Token Vault grant. Auth0 keeps one grant per user and connection and
+   *  each connect step replaces it, so a connection of its own keeps other servers from replacing this one. */
+  readonly vaultConnection: string;
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
   readonly onEvent?: (event: ConnectEvent) => void;
@@ -204,7 +209,7 @@ export function createConnectHandler(options: ConnectOptions): ConnectHandler {
     const connectState = base64Url(randomBytes(24));
     const email = idTokenEmail(tokens.id_token);
     const connectResponse = await post('me/v1/connected-accounts/connect', {
-      connection: options.connection, redirect_uri: completeUrl, state: connectState,
+      connection: options.vaultConnection, redirect_uri: completeUrl, state: connectState,
       scopes: ['openid', 'profile', ...GOOGLE_SCOPES],
       // Pre-select the Google account just used, so Google doesn't show its account chooser again.
       ...(email ? { authorization_params: { login_hint: email } } : {}),

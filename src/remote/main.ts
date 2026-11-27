@@ -50,7 +50,7 @@ function registerShutdown(httpServer: Server): void {
 function perUserAccess(auth: AuthConfig, perUser: PerUserConfig, log: (event: LogLine) => void) {
   const vault = createTokenVault({
     issuer: auth.issuer, clientId: perUser.tokenVaultClientId, clientSecret: perUser.tokenVaultClientSecret,
-    connection: perUser.googleConnection, connectUrl: `${perUser.publicBaseUrl}/connect`, onEvent: log,
+    connection: perUser.tokenVaultConnection, connectUrl: `${perUser.publicBaseUrl}/connect`, onEvent: log,
   });
   const registry = createUserRuntimeRegistry({ log });
   const createMcpServer: HttpServerOptions['createMcpServer'] = user => {
@@ -62,7 +62,8 @@ function perUserAccess(auth: AuthConfig, perUser: PerUserConfig, log: (event: Lo
   };
   const connect = createConnectHandler({
     issuer: auth.issuer, publicBaseUrl: perUser.publicBaseUrl, clientId: perUser.connectClientId,
-    clientSecret: perUser.connectClientSecret, connection: perUser.googleConnection, onEvent: log,
+    clientSecret: perUser.connectClientSecret, connection: perUser.googleConnection,
+    vaultConnection: perUser.tokenVaultConnection, onEvent: log,
   });
   return { createMcpServer, connect };
 }
