@@ -1,15 +1,21 @@
 import { createServer as createNodeServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { NodeStreamableHTTPServerTransport, hostHeaderValidation, originValidation } from '@modelcontextprotocol/node';
 import { bearerAuthChallengeResponse, getOAuthProtectedResourceMetadataUrl, OAuthError, OAuthErrorCode, verifyBearerToken, type McpServer, type OAuthTokenVerifier } from '@modelcontextprotocol/server';
+import { authorizationServerMetadata, CONNECT_PATHS, type ConnectHandler, type ConnectPath } from './auth/connect.js';
 import type { RemoteConfig } from './config.js';
 
 export type AuthRejectReason = 'no_token' | 'invalid_token' | 'insufficient_scope' | 'verifier_unavailable';
 
+/** The signed-in caller, for per-user Google access only. Never logged or passed to tools. */
+export type VerifiedUser = { readonly userId: string; readonly accessToken: string };
+
 export type HttpServerOptions = {
   readonly verifier?: OAuthTokenVerifier;
   readonly onAuthReject?: (reason: AuthRejectReason) => void;
-  /** Builds the MCP server for one request using process-level dependencies. */
-  readonly createMcpServer: () => McpServer;
+  /** Builds the MCP server for one request; with per-user access it receives the verified caller. */
+  readonly createMcpServer: (user?: VerifiedUser) => McpServer;
+  /** Serves the connect step; required with per-user access. */
+  readonly connect?: ConnectHandler;
   /** Receives unexpected errors after the response. Defaults to stderr. */
   readonly onError?: (error: unknown) => void;
 };
@@ -44,6 +50,8 @@ function writeJsonRpcError(
 
 export function createHttpServer(config: RemoteConfig, options: HttpServerOptions): Server {
   if (config.auth && !options.verifier) throw new Error('Authorization requires a token verifier');
+  if (config.perUser && !options.connect) throw new Error('Per-user access requires the connect handler');
+  const perUser = config.auth && config.perUser ? { ...config.perUser, auth: config.auth } : undefined;
   const validateHost = hostHeaderValidation([...config.allowedHosts]);
   const validateOrigin = originValidation([...config.allowedOrigins]);
   const createMcpServer = options.createMcpServer;
@@ -59,26 +67,43 @@ export function createHttpServer(config: RemoteConfig, options: HttpServerOption
         res.end(JSON.stringify({ status: 'ok' }));
         return;
       }
+      const authorizationServerPath = perUser !== undefined && path === '/.well-known/oauth-authorization-server';
       if (config.auth && (path === '/.well-known/oauth-protected-resource'
-        || path === '/.well-known/oauth-protected-resource/mcp')) {
+        || path === '/.well-known/oauth-protected-resource/mcp' || authorizationServerPath)) {
         const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS',
           'Access-Control-Allow-Headers': 'Authorization' };
         if (req.method === 'OPTIONS') {
           res.writeHead(204, cors);
           res.end();
         } else if (req.method === 'GET') {
+          // With per-user access this server is the advertised authorization server, so sign-in starts at
+          // its /authorize (the connect step); Auth0 still issues every token.
+          const body = authorizationServerPath
+            ? authorizationServerMetadata({ issuer: config.auth.issuer, publicBaseUrl: perUser.publicBaseUrl, scope: config.auth.requiredScope })
+            : { resource: config.auth.audience,
+              authorization_servers: [perUser ? `${perUser.publicBaseUrl}/` : config.auth.issuer],
+              scopes_supported: [config.auth.requiredScope], bearer_methods_supported: ['header'] };
           res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ resource: config.auth.audience, authorization_servers: [config.auth.issuer],
-            scopes_supported: [config.auth.requiredScope], bearer_methods_supported: ['header'] }));
+          res.end(JSON.stringify(body));
         } else {
           writeJsonRpcError(res, 405, -32000, 'Method not allowed.', { ...cors, Allow: 'GET, OPTIONS' });
         }
+        return;
+      }
+      if (perUser && (CONNECT_PATHS as readonly string[]).includes(path)) {
+        if (req.method !== 'GET') {
+          writeJsonRpcError(res, 405, -32000, 'Method not allowed.', { Allow: 'GET' });
+          return;
+        }
+        const url = new URL(req.url ?? '/', perUser.publicBaseUrl);
+        await sendWebResponse(res, await options.connect!(path as ConnectPath, url, req.headers.cookie));
         return;
       }
       if (path !== '/mcp') {
         writeJsonRpcError(res, 404, -32000, 'Not Found');
         return;
       }
+      let user: VerifiedUser | undefined;
       if (config.auth) {
         const authOptions = { verifier: options.verifier!, requiredScopes: [config.auth.requiredScope],
           resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(new URL(config.auth.audience)),
@@ -91,7 +116,12 @@ export function createHttpServer(config: RemoteConfig, options: HttpServerOption
             && !/^Bearer [^\s,]+$/i.test(req.headers.authorization))) {
             throw new OAuthError(OAuthErrorCode.InvalidToken, 'Invalid access token');
           }
-          await verifyBearerToken(req.headers.authorization, authOptions);
+          const authInfo = await verifyBearerToken(req.headers.authorization, authOptions);
+          if (perUser) {
+            const userId = authInfo.extra?.userId;
+            if (typeof userId !== 'string' || userId === '') throw new OAuthError(OAuthErrorCode.InvalidToken, 'Invalid access token');
+            user = { userId, accessToken: authInfo.token };
+          }
         } catch (error) {
           const code = error instanceof OAuthError ? error.code : OAuthErrorCode.ServerError;
           const reason: AuthRejectReason = code === OAuthErrorCode.InsufficientScope ? 'insufficient_scope'
@@ -120,7 +150,7 @@ export function createHttpServer(config: RemoteConfig, options: HttpServerOption
           headers[index - index % 2].toLowerCase() !== 'authorization');
       }
 
-      const server = createMcpServer();
+      const server = createMcpServer(user);
       const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on('close', () => { void server.close().catch(onError); });
       await server.connect(transport);

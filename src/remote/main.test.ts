@@ -95,7 +95,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     const port = await freePort();
     const running = startProcess(t, { ...BASE_ENV, PORT: String(port) });
     assert.equal(await running.waitForListening(), port);
-    const listeningLine = `display-video-360-mcp-server ${packageJson.version} listening on http://127.0.0.1:${port}/mcp`;
+    const listeningLine = `display-video-360-mcp-server ${packageJson.version} listening on http://127.0.0.1:${port}/mcp (Google access: shared credential)`;
     assert.equal(running.stderrLines()[0], listeningLine);
     const client = new Client({ name: 'entrypoint-test', version: '1.0.0' });
     t.after(async () => { await client.close().catch(() => {}); });
@@ -122,12 +122,28 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   });
 }
 
+test('entry point runs per-user Google access when its settings are present', { timeout: 15000 }, async t => {
+  const port = await freePort();
+  const running = startProcess(t, { ...BASE_ENV, PORT: String(port),
+    AUTH0_ISSUER: 'https://issuer.example/', AUTH0_AUDIENCE: 'https://resource.example/mcp',
+    AUTH0_TOKEN_VAULT_CLIENT_ID: 'vault-client', AUTH0_TOKEN_VAULT_CLIENT_SECRET: 'vault-secret',
+    AUTH0_CONNECT_CLIENT_ID: 'connect-client', AUTH0_CONNECT_CLIENT_SECRET: 'connect-secret' });
+  assert.equal(await running.waitForListening(), port);
+  assert.equal(running.stderrLines()[0],
+    `display-video-360-mcp-server ${packageJson.version} listening on http://127.0.0.1:${port}/mcp (Google access: per user)`);
+  assert.equal(await getStatus(port, '/.well-known/oauth-authorization-server'), 200);
+  assert.equal(await getStatus(port, '/connect/complete'), 200);
+  running.kill('SIGTERM');
+  assert.deepEqual(await running.exited, { code: 0, signal: null });
+  assert.ok(!running.stderrLines().join('\n').includes('secret'), 'no setting value is printed');
+});
+
 test('environment cannot override the loopback bind address', { timeout: 15000 }, async t => {
   const port = await freePort();
   const running = startProcess(t, { ...BASE_ENV, PORT: String(port), HOST: '0.0.0.0', BIND_ADDRESS: '0.0.0.0' });
   assert.equal(await running.waitForListening(), port);
   assert.equal(running.stderrLines()[0],
-    `display-video-360-mcp-server ${packageJson.version} listening on http://127.0.0.1:${port}/mcp`);
+    `display-video-360-mcp-server ${packageJson.version} listening on http://127.0.0.1:${port}/mcp (Google access: shared credential)`);
   running.kill('SIGTERM');
   assert.deepEqual(await running.exited, { code: 0, signal: null });
 });

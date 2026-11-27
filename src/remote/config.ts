@@ -6,12 +6,24 @@ export type AuthConfig = {
   readonly requiredScope: string;
 };
 
+// Per-user Google access (Auth0 Token Vault). Without it the server uses its own Google credential for everyone.
+export type PerUserConfig = {
+  /** This server's public origin, taken from AUTH0_AUDIENCE (no trailing slash). */
+  readonly publicBaseUrl: string;
+  readonly tokenVaultClientId: string;
+  readonly tokenVaultClientSecret: string;
+  readonly connectClientId: string;
+  readonly connectClientSecret: string;
+  readonly googleConnection: string;
+};
+
 // HTTP and authorization settings of the remote entry point. The Google quota project is read by the
 // shared loadConfig in src/config.ts.
 export type RemoteConfig = {
   readonly port: number;
   readonly bindAddress: string;
   readonly auth: AuthConfig | undefined;
+  readonly perUser: PerUserConfig | undefined;
   readonly allowedHosts: readonly string[];
   readonly allowedOrigins: readonly string[];
 };
@@ -87,12 +99,35 @@ export function loadRemoteConfig(env: NodeJS.ProcessEnv = process.env): RemoteCo
   if (!isLoopback(bindAddress) && !auth) {
     throw new Error('AUTH0_ISSUER and AUTH0_AUDIENCE are required');
   }
+  const perUser = loadPerUserConfig(env, auth);
   return {
     port,
     bindAddress,
     auth,
+    perUser,
     allowedHosts,
     allowedOrigins,
+  };
+}
+
+const PER_USER_VARIABLES = ['AUTH0_TOKEN_VAULT_CLIENT_ID', 'AUTH0_TOKEN_VAULT_CLIENT_SECRET',
+  'AUTH0_CONNECT_CLIENT_ID', 'AUTH0_CONNECT_CLIENT_SECRET'] as const;
+
+function loadPerUserConfig(env: NodeJS.ProcessEnv, auth: AuthConfig | undefined): PerUserConfig | undefined {
+  const values = PER_USER_VARIABLES.map(name => env[name]?.trim() ?? '');
+  if (values.every(value => value === '')) return undefined;
+  if (values.some(value => value === '')) {
+    throw new Error(`${PER_USER_VARIABLES.join(', ')} must be configured together`);
+  }
+  if (!auth) throw new Error('Per-user Google access requires AUTH0_ISSUER and AUTH0_AUDIENCE');
+  const googleConnection = env.AUTH0_GOOGLE_CONNECTION?.trim() || 'google-oauth2';
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(googleConnection)) {
+    throw new Error('AUTH0_GOOGLE_CONNECTION must be an Auth0 connection name');
+  }
+  const [tokenVaultClientId, tokenVaultClientSecret, connectClientId, connectClientSecret] = values;
+  return {
+    publicBaseUrl: new URL(auth.audience).origin,
+    tokenVaultClientId, tokenVaultClientSecret, connectClientId, connectClientSecret, googleConnection,
   };
 }
 

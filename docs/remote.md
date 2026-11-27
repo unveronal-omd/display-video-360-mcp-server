@@ -2,16 +2,21 @@
 
 This fork runs the shared server over Streamable HTTP behind Auth0, on Cloud Run. Everything specific to that lives in `src/remote/` plus the `Dockerfile`, the ignore files, [deployment.md](deployment.md) (operator note), and this guide. Shared code is unchanged from upstream; shared changes go upstream first and arrive here with `git pull upstream main`.
 
+In progress: per-user Google access instead of the shared Google identity, see [per-user-google-plan.md](per-user-google-plan.md).
+
 ## Module map
 
 | Module | Owns |
 |---|---|
-| `src/remote/main.ts` | The HTTP entry point and the only `listen()`. Shared `loadConfig` + `loadRemoteConfig`, the stderr JSON logger, the shared `createRuntime`, the optional Auth0 verifier, signal shutdown with a 5 s force-close. |
+| `src/remote/main.ts` | The HTTP entry point and the only `listen()`. Shared `loadConfig` + `loadRemoteConfig`, the stderr JSON logger, either the shared `createRuntime` or (per-user mode) Token Vault + connect handler + user registry, the optional Auth0 verifier, signal shutdown with a 5 s force-close. |
 | `src/remote/config.ts` | `loadRemoteConfig`: port, bind address, Auth0 issuer/audience/scope, Host and Origin allowlists. The only remote reader of `process.env`. Refuses a non-loopback bind without Auth0. |
-| `src/remote/http.ts` | `node:http` handler: Host guard → Origin guard → public health/discovery routes → `/mcp` authorization gate → POST only → a fresh `McpServer` (from `runtime.createMcpServer`) and stateless transport per request. Never listens. |
-| `src/remote/auth/token-verifier.ts` | Lazy Auth0 JWT verification with remote JWKS (RS256, exact audience). No logging or caller state. |
+| `src/remote/http.ts` | `node:http` handler: Host guard → Origin guard → public health/discovery routes → (per-user mode) GET-only connect routes → `/mcp` authorization gate → POST only → a fresh `McpServer` (from `runtime.createMcpServer`) and stateless transport per request. Never listens. |
+| `src/remote/auth/token-verifier.ts` | Lazy Auth0 JWT verification with remote JWKS (RS256, exact audience); the token's `sub` goes into `extra.userId`. No logging or caller state. |
+| `src/remote/auth/token-vault.ts` | Per-user mode: exchanges the caller's Auth0 token for their Google access token (Token Vault), cached per user until 2 minutes before expiry; user-safe errors with the `/connect` link; fixed-vocabulary events. |
+| `src/remote/auth/connect.ts` | Per-user mode: the connect step (`/authorize`, `/connect`, `/connect/callback`, `/connect/complete`) with PKCE and an AES-GCM cookie; the authorization-server metadata. |
+| `src/remote/user-runtime.ts` | Per-user runtimes (built by `main.ts` in per-user mode): a registry keyed by user ID with idle eviction and a size cap; the user fetch (user's token, no `x-goog-user-project`); `RemoteCredentialsError`, a `GoogleCredentialsError` with a remote-user message. |
 
-Rules (`src/remote/boundaries.test.ts`): only `config.ts` reads the environment; only `main.ts` listens and builds the runtime; only `main.ts` and `http.ts` write output, never to stdout; only `auth/` imports `jose`; remote code reaches shared code only through `config`, `runtime`, and the logger.
+Rules (`src/remote/boundaries.test.ts`): only `config.ts` reads the environment; only `main.ts` listens and builds the runtime; only `main.ts` and `http.ts` write output, never to stdout; only `auth/` imports `jose`; remote code reaches shared code only through `config`, `runtime`, and the logger, except `user-runtime.ts`, which may import exactly the modules `createRuntime` wires.
 
 ## Configuration
 
@@ -26,6 +31,11 @@ Rules (`src/remote/boundaries.test.ts`): only `config.ts` reads the environment;
 | `AUTH0_REQUIRED_SCOPE` | no | Required permission, default `use:mcp`. |
 | `MCP_ALLOWED_HOSTS` | no | Allowed `Host` names (comma-separated), default `localhost,127.0.0.1`. Must contain the public hostname when deployed. |
 | `MCP_ALLOWED_ORIGINS` | no | Allowed browser `Origin` hostnames, same default. |
+| `AUTH0_TOKEN_VAULT_CLIENT_ID`, `AUTH0_TOKEN_VAULT_CLIENT_SECRET` | per-user mode | The Custom API Client that performs the Token Vault exchange. |
+| `AUTH0_CONNECT_CLIENT_ID`, `AUTH0_CONNECT_CLIENT_SECRET` | per-user mode | The Regular Web Application MCP clients use; it also runs the connect step. The secret also derives the cookie key. |
+| `AUTH0_GOOGLE_CONNECTION` | no | Auth0 Google connection name, default `google-oauth2`. |
+
+Per-user mode is on when all four `AUTH0_TOKEN_VAULT_*` / `AUTH0_CONNECT_*` values are set (with Auth0); setting only some stops startup. Without them the server uses its own Google credential for everyone. The public URL for callbacks is the origin of `AUTH0_AUDIENCE`. The startup line names the mode.
 
 Local run: `npm run build`, then `GOOGLE_CLOUD_QUOTA_PROJECT=<project> npm run start:http` (or `npm run dev:http`). Without Auth0 settings it serves loopback only, with no sign-in.
 
@@ -35,7 +45,8 @@ Local run: `npm run build`, then `GOOGLE_CLOUD_QUOTA_PROJECT=<project> npm run s
 - **Fail-closed remote bind:** a non-loopback address without both Auth0 settings stops startup. The image sets no bind address or Auth0 setting, so an image started without them stays on loopback.
 - **The gate covers all of `/mcp` before the method check**; a rejected request never builds an MCP server, and the `Authorization` header is removed before the transport.
 - **Stateless Streamable HTTP, POST only, plain `node:http`.** No sessions to store; a fresh server per request shares the runtime's clients, caches, and limits.
-- **One shared Google identity:** everyone with the Auth0 role acts as the server's Google account. Access is granted per person through an Auth0 role.
+- **One shared Google identity:** everyone with the Auth0 role acts as the server's Google account. Access is granted per person through an Auth0 role. Being replaced by per-user access ([plan](per-user-google-plan.md)).
+- **Per-user runtimes copy `createRuntime`'s wiring** instead of changing shared code (decided 2026-11-27: the work stays in this fork). One runtime per user keeps the advertiser directory cache, query cleanup, and Bid Manager limits apart between Google identities. `user-runtime.test.ts` pins a SHA-256 of `src/runtime.ts`, so any change there fails the suite until the copy is updated. Per-user fetches omit `x-goog-user-project`: users have no permission on a quota project. Each runtime has its own Bid Manager latch and pacer although the quota is per project; acceptable for a few users.
 - **Cloud Run:** built from this public fork at an exact commit by Cloud Build and deployed by digest, manually; the Google credential is a Secret Manager file pinned to a numbered version; Cloud Run request logs (client IP) are excluded from storage. Details: [deployment.md](deployment.md).
 
 ## HTTP handler (`http.ts`)
@@ -64,6 +75,8 @@ The server is a resource server, following the MCP authorization spec version **
 - `bearerAuthChallengeResponse` produces OAuth JSON and a `WWW-Authenticate` challenge on 401/403. The header includes error, description, required scope, and metadata URL (quoted and escaped); 500 has no bearer challenge. The HTTP gate replaces arbitrary verifier error messages with fixed text before rendering.
 - Node normally discards duplicate Authorization fields, and the SDK parser splits on spaces without rejecting extra fields. The gate explicitly counts raw Authorization fields and validates the complete header before calling the helper. It examines no other caller headers beyond the existing Host/Origin guards.
 - Remote JWKS resolution is lazy, cached and bounded. Unknown keys and token/signature/claim failures are fixed invalid-token responses. Resolver fetch/timeout and unusable key-set failures are fixed server errors. No jose diagnostic text is inspected or exposed.
+
+**Per-user mode** (decided 2026-11-27, same design as the GA4 and Google Ads servers): the protected-resource metadata names this server as the authorization server, and `/.well-known/oauth-authorization-server` advertises its `/authorize` with Auth0's token and registration endpoints, so Auth0 still issues every token. `/authorize` accepts only the connect client's code requests, runs the connect step (a plain Google login does not fill Token Vault), then resumes the saved request at Auth0 with the Google connection. The gate additionally requires a `sub`; the verified token goes to `createMcpServer` only as the user's Token Vault source, never to tools or logs. Logged events (`token_vault.exchange`, `connect.step`) carry fixed outcomes, HTTP status, and short Auth0 error codes only. Not yet verified live. Known gaps: a Google token revoked mid-hour stays cached until it expires; each tool call during a cache miss makes its own exchange.
 
 Public health and both protected-resource metadata URLs remain behind Host/Origin guards. Discovery’s wildcard CORS header does not bypass Origin validation. The real Auth0 token shape and the claude.ai registration were verified live afterwards (see below).
 

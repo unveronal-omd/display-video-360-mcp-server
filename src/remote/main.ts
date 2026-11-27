@@ -5,9 +5,13 @@ import packageJson from '../../package.json' with { type: 'json' };
 import { loadConfig } from '../config.js';
 import { createJsonLogger } from '../integrations/google/log.js';
 import { createRuntime } from '../runtime.js';
+import { createConnectHandler } from './auth/connect.js';
 import { createAuth0Verifier } from './auth/token-verifier.js';
-import { loadRemoteConfig } from './config.js';
-import { createHttpServer, httpErrorClass } from './http.js';
+import { createTokenVault, TokenVaultError } from './auth/token-vault.js';
+import { loadRemoteConfig, type AuthConfig, type PerUserConfig } from './config.js';
+import { createHttpServer, httpErrorClass, type HttpServerOptions } from './http.js';
+import { createUserRuntimeRegistry, RemoteCredentialsError } from './user-runtime.js';
+import type { LogLine } from '../integrations/google/log.js';
 
 const NAME = 'display-video-360-mcp-server';
 const SHUTDOWN_TIMEOUT_MS = 5000;
@@ -42,14 +46,37 @@ function registerShutdown(httpServer: Server): void {
   process.once('SIGTERM', shutdown);
 }
 
+/** Per-user Google access: each caller gets their own runtime, calling Google with their Token Vault token. */
+function perUserAccess(auth: AuthConfig, perUser: PerUserConfig, log: (event: LogLine) => void) {
+  const vault = createTokenVault({
+    issuer: auth.issuer, clientId: perUser.tokenVaultClientId, clientSecret: perUser.tokenVaultClientSecret,
+    connection: perUser.googleConnection, connectUrl: `${perUser.publicBaseUrl}/connect`, onEvent: log,
+  });
+  const registry = createUserRuntimeRegistry({ log });
+  const createMcpServer: HttpServerOptions['createMcpServer'] = user => {
+    // http.ts always passes the caller in per-user mode; refuse rather than fall back to a shared identity.
+    if (user === undefined) throw new Error('Per-user access requires a verified caller');
+    return registry.runtimeFor(user.userId, () => vault.getGoogleToken(user.userId, user.accessToken).catch((error: unknown) => {
+      throw error instanceof TokenVaultError ? new RemoteCredentialsError(error.kind, error.message) : error;
+    })).createMcpServer();
+  };
+  const connect = createConnectHandler({
+    issuer: auth.issuer, publicBaseUrl: perUser.publicBaseUrl, clientId: perUser.connectClientId,
+    clientSecret: perUser.connectClientSecret, connection: perUser.googleConnection, onEvent: log,
+  });
+  return { createMcpServer, connect };
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const remoteConfig = loadRemoteConfig();
   const log = createJsonLogger({ write: line => { process.stderr.write(line); }, now: Date.now });
-  const runtime = createRuntime(config, { log });
   const verifier = remoteConfig.auth ? createAuth0Verifier(remoteConfig.auth) : undefined;
+  const access = remoteConfig.auth && remoteConfig.perUser
+    ? perUserAccess(remoteConfig.auth, remoteConfig.perUser, log)
+    : { createMcpServer: createRuntime(config, { log }).createMcpServer, connect: undefined };
   const httpServer = createHttpServer(remoteConfig, {
-    createMcpServer: runtime.createMcpServer,
+    ...access,
     verifier,
     onAuthReject: reason => { log({ type: 'auth.reject', reason }); },
     onError: error => { log({ type: 'http.error', errorClass: httpErrorClass(error) }); },
@@ -65,7 +92,8 @@ async function main(): Promise<void> {
 
   registerShutdown(httpServer);
   const { port } = httpServer.address() as AddressInfo;
-  console.error(`${NAME} ${packageJson.version} listening on http://${remoteConfig.bindAddress}:${port}/mcp`);
+  console.error(`${NAME} ${packageJson.version} listening on http://${remoteConfig.bindAddress}:${port}/mcp`
+    + ` (Google access: ${remoteConfig.perUser ? 'per user' : 'shared credential'})`);
 }
 
 main().catch((error: unknown) => {

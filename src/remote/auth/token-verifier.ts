@@ -35,6 +35,8 @@ export function createAuth0Verifier(options: {
           scopes: typeof payload.scope === 'string' ? payload.scope.split(' ').filter(Boolean) : [],
           expiresAt: payload.exp!,
           resource: new URL(options.audience),
+          // The Auth0 user ID keys per-user Google access; it is never logged or passed to tools.
+          ...(typeof payload.sub === 'string' && payload.sub !== '' ? { extra: { userId: payload.sub } } : {}),
         };
       } catch (error) {
         if (error instanceof OAuthError && error.code === OAuthErrorCode.ServerError) throw error;

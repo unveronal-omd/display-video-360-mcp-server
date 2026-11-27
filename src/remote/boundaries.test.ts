@@ -15,7 +15,7 @@ const importSpecifier = /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)["'`]([^"'`]+)["'`]/
 const specifiers = (content: string) => [...content.matchAll(importSpecifier)].map(match => match[1]);
 
 test('the remote sources exist', () => {
-  assert.deepEqual(sources.map(({ path }) => path).sort(), ['auth/token-verifier.ts', 'config.ts', 'http.ts', 'main.ts']);
+  assert.deepEqual(sources.map(({ path }) => path).sort(), ['auth/connect.ts', 'auth/token-vault.ts', 'auth/token-verifier.ts', 'config.ts', 'http.ts', 'main.ts', 'user-runtime.ts']);
 });
 
 test('only remote config reads the environment', () => {
@@ -41,9 +41,11 @@ test('only main and http write to the console or stderr, and nothing writes to s
   assertNoViolations('no stdout writes', (_path, content) => stdoutWrite.test(content));
 });
 
-test('auth imports only jose, the server SDK, and Node built-ins', () => {
-  const allowed = (value: string) => value === 'jose' || value === '@modelcontextprotocol/server' || value.startsWith('node:');
+test('auth imports only jose, the server SDK, Node built-ins, and its own files', () => {
+  const allowed = (value: string) => value === 'jose' || value === '@modelcontextprotocol/server' || value.startsWith('node:')
+    || /^\.\/[a-z-]+\.js$/.test(value);
   assert.equal(allowed('../config.js'), false);
+  assert.equal(allowed('./token-vault.js'), true);
   assertNoViolations('auth dependency allowlist', (path, content) => path.startsWith('auth/') && specifiers(content).some(value => !allowed(value)));
 });
 
@@ -58,6 +60,16 @@ test('only main and http import auth, and jose stays inside auth', () => {
 
 test('remote code reaches the shared code only through config, runtime, and the logger', () => {
   const sharedAllowed = ['../config.js', '../runtime.js', '../integrations/google/log.js', '../../package.json'];
-  assertNoViolations('remote may import only config, runtime, and the logger from the shared code', (_path, content) =>
-    specifiers(content).some(value => value.startsWith('../') && !value.startsWith('../auth') && !sharedAllowed.includes(value)));
+  assertNoViolations('remote may import only config, runtime, and the logger from the shared code', (path, content) => path !== 'user-runtime.ts'
+    && specifiers(content).some(value => value.startsWith('../') && !value.startsWith('../auth') && !sharedAllowed.includes(value)));
+});
+
+test('only user-runtime wires the shared modules, and only those createRuntime wires', () => {
+  // The modules src/runtime.ts imports, plus the credential error type; user-runtime.ts copies that wiring per user.
+  const wiring = ['../runtime.js', '../server.js', '../tools/call.js', '../combined/performance.js', '../combined/presets.js',
+    '../integrations/google/log.js', '../integrations/google/auth.js', '../integrations/bidmanager/client.js',
+    '../integrations/bidmanager/cleanup.js', '../integrations/bidmanager/reporting.js', '../integrations/dv360/client.js',
+    '../integrations/dv360/metadata.js'];
+  assertNoViolations('user-runtime.ts may import only the shared modules createRuntime wires', (path, content) =>
+    path === 'user-runtime.ts' && specifiers(content).some(value => !wiring.includes(value)));
 });

@@ -9,6 +9,7 @@ test('uses default configuration when variables are unset', () => {
     port: 8237,
     bindAddress: '127.0.0.1',
     auth: undefined,
+    perUser: undefined,
     allowedHosts: ['localhost', '127.0.0.1'],
     allowedOrigins: ['localhost', '127.0.0.1'],
   });
@@ -68,7 +69,7 @@ test('preserves wildcard origin schemes', () => {
 
 test('ignores HOST and bind-address variables other than MCP_BIND_ADDRESS', () => {
   const config = loadConfig({ ...BASE_ENV, HOST: '0.0.0.0', BIND_ADDRESS: '0.0.0.0' });
-  assert.deepEqual(Object.keys(config).sort(), ['allowedHosts', 'allowedOrigins', 'auth', 'bindAddress', 'port']);
+  assert.deepEqual(Object.keys(config).sort(), ['allowedHosts', 'allowedOrigins', 'auth', 'bindAddress', 'perUser', 'port']);
   assert.deepEqual(config, loadConfig({ ...BASE_ENV }));
 });
 
@@ -126,4 +127,34 @@ for (const variable of ['MCP_ALLOWED_HOSTS', 'MCP_ALLOWED_ORIGINS']) {
 }
 test('host allowlist rejects scheme wildcard', () => {
   assert.throws(() => loadConfig({ ...BASE_ENV, MCP_ALLOWED_HOSTS: 'vscode-webview://*' }), /bare hostname/);
+});
+
+const PER_USER = {
+  AUTH0_TOKEN_VAULT_CLIENT_ID: 'vault-client', AUTH0_TOKEN_VAULT_CLIENT_SECRET: 'vault-secret',
+  AUTH0_CONNECT_CLIENT_ID: 'connect-client', AUTH0_CONNECT_CLIENT_SECRET: 'connect-secret',
+};
+
+test('per-user access is off without its settings', () => {
+  assert.equal(loadConfig({ ...BASE_ENV, ...AUTH }).perUser, undefined);
+  assert.equal(loadConfig({ ...BASE_ENV, ...AUTH, AUTH0_TOKEN_VAULT_CLIENT_ID: '  ', AUTH0_GOOGLE_CONNECTION: 'other' }).perUser, undefined);
+});
+
+test('per-user access takes its public URL from the audience and defaults the Google connection', () => {
+  assert.deepEqual(loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER }).perUser, {
+    publicBaseUrl: 'https://mcp.example.test',
+    tokenVaultClientId: 'vault-client', tokenVaultClientSecret: 'vault-secret',
+    connectClientId: 'connect-client', connectClientSecret: 'connect-secret', googleConnection: 'google-oauth2',
+  });
+  assert.equal(loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER, AUTH0_GOOGLE_CONNECTION: 'google-custom' }).perUser?.googleConnection, 'google-custom');
+});
+
+for (const name of Object.keys(PER_USER)) {
+  test(`per-user access refuses to start without ${name}`, () => {
+    assert.throws(() => loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER, [name]: '' }), /must be configured together/);
+  });
+}
+
+test('per-user access requires Auth0 and a valid connection name', () => {
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...PER_USER }), /requires AUTH0_ISSUER and AUTH0_AUDIENCE/);
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...AUTH, ...PER_USER, AUTH0_GOOGLE_CONNECTION: 'bad name' }), /AUTH0_GOOGLE_CONNECTION/);
 });
